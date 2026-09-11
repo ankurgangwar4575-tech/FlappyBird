@@ -15,7 +15,8 @@ A reinforcement-learning project that trains a Deep Q-Network (DQN) agent to pla
 
 ```text
 flappy-bird-dqn/
-├── agent.py                 # Training and testing workflow
+├── agent.py                 # Training workflow and checkpoint resume
+├── test.py                  # Run a saved model for a fixed number of test steps
 ├── dqn.py                   # DQN neural-network model
 ├── experience_replay.py     # Replay-memory implementation
 ├── parameters.yaml          # Environment and hyperparameter settings
@@ -46,6 +47,15 @@ and exploration rate in the terminal. At the end of each session, the model is
 saved to `runs/FlappyBird-v0.pt`. A later training session automatically loads
 that checkpoint and continues from its weights.
 
+Example training output:
+
+```text
+Train | Episode: 12 | Episode steps: 84 | Total steps: 1035 | Reward: 6.90 | Epsilon: 0.9945
+```
+
+Press `Ctrl+C` to end a session early. The current model is saved before the
+program exits.
+
 For a short run with a fixed number of episodes:
 
 ```bash
@@ -67,11 +77,51 @@ python test.py --steps 1000
 ```
 
 This opens the game window and prints each completed episode's steps and
-reward. Use `--no-render` to run without the window.
+reward. The terminal messages are test results only: this command does not
+train, update, or save the model.
+
+Example test output:
+
+```text
+Test | Episode: 3 | Episode steps: 125 | Total steps: 420 | Reward: 10.50
+```
+
+Use `--no-render` to test without opening the game window:
+
+```bash
+python test.py --steps 10000 --no-render
+```
 
 ## ⚙️ Hyperparameters
 
-Edit `parameters.yaml` to change the learning rate, discount factor, epsilon schedule, replay-memory size, mini-batch size, and target-network update rate.
+Edit `parameters.yaml` to change the learning rate, discount factor, epsilon
+schedule, replay-memory size, mini-batch size, target-network update rate, and
+the number of steps per training session.
+
+```yaml
+FlappyBird-v0:
+  train_steps: 50000
+```
+
+`train_steps` counts environment actions, not episodes. Every training session
+stops after this many steps and saves the checkpoint. The next `python agent.py`
+run loads that checkpoint and continues training from the saved network weights.
+
+## 📈 Recommended training schedule
+
+Start with 50,000-step sessions and test after every 2–4 sessions:
+
+```bash
+python test.py --steps 10000
+```
+
+- Aim for **1,000,000 total training steps** first (20 sessions at 50,000 steps).
+- Continue to **2,000,000 steps** if test rewards are still improving but the
+  bird is inconsistent.
+- Consider **3,000,000 steps** only when testing shows continuing improvement.
+
+Do not judge the model from one lucky episode. Compare repeated test runs and
+look for consistently higher rewards and longer survival.
 
 ## 🛠️ Technologies
 
