@@ -10,6 +10,7 @@ import yaml
 import random
 import argparse
 import os
+from collections import deque
 # Steps
 '''
 1. Set env
@@ -52,13 +53,27 @@ class Agent:
         self.network_sync_rate=params["network_sync_rate"]
         self.reward_threshold=params["reward_threshold"]
         self.train_steps=params["train_steps"]
+        self.training_goal_steps=params["training_goal_steps"]
+        self.best_model_min_improvement=params["best_model_min_improvement"]
         
         
         self.loss_fn=nn.MSELoss()
         self.optimizer=None
 
         self.LOG_FILE=os.path.join(RUNS_DIR,f"{self.param_set}.log")
+        # The best checkpoint is used for testing; the latest checkpoint is used
+        # only to resume a later training session.
         self.MODEL_FILE=os.path.join(RUNS_DIR,f"{self.param_set}.pt")
+        self.LATEST_FILE=os.path.join(RUNS_DIR,f"{self.param_set}-latest.pt")
+
+    @staticmethod
+    def _load_checkpoint(path):
+        """Load both new training checkpoints and the project's older state dict."""
+        return torch.load(path, map_location=device, weights_only=True)
+
+    @staticmethod
+    def _policy_state(checkpoint):
+        return checkpoint.get("policy_state_dict", checkpoint)
     def run(self, is_training=True, render=False, max_steps=None, max_episodes=None):
         """Train or evaluate the agent.
 
@@ -75,34 +90,68 @@ class Agent:
         policy_dqn=DQN(num_states,num_actions).to(device)
     
         if is_training:
-            # Resume from the last completed training session when a checkpoint exists.
-            if os.path.exists(self.MODEL_FILE):
-                policy_dqn.load_state_dict(
-                    torch.load(self.MODEL_FILE, map_location=device, weights_only=True)
-                )
-                print(f"Resuming training from {self.MODEL_FILE}")
+            print(f"Training on {device}")
+            memory=ReplayMemory(self.replay_memory_size)
+            self.optimizer=optim.Adam(policy_dqn.parameters(),lr=self.alpha)
+
+            epsilon=self.epsilon_init
+            lifetime_steps=0
+            best_reward=float("-inf")
+            recent_rewards=deque(maxlen=100)
+
+            if os.path.exists(self.LATEST_FILE):
+                checkpoint=self._load_checkpoint(self.LATEST_FILE)
+                policy_dqn.load_state_dict(self._policy_state(checkpoint))
+                self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                epsilon=checkpoint["epsilon"]
+                lifetime_steps=checkpoint["lifetime_steps"]
+                best_reward=checkpoint["best_mean_reward"]
+                recent_rewards.extend(checkpoint.get("recent_rewards", []))
+                print(f"Resumed checkpoint from step {lifetime_steps:,}")
+            elif os.path.exists(self.MODEL_FILE):
+                # Supports the old FlappyBird-v0.pt state-dict format.
+                checkpoint=self._load_checkpoint(self.MODEL_FILE)
+                policy_dqn.load_state_dict(self._policy_state(checkpoint))
+                print("Resumed network weights from the existing best model")
             else:
                 print("No saved model found; starting a new training session.")
 
-            memory=ReplayMemory(self.replay_memory_size)
-            epsilon=self.epsilon_init
-            
             target_dqn=DQN(num_states,num_actions).to(device)
-            # copy the wt and bias vals from policy => target
             target_dqn.load_state_dict(policy_dqn.state_dict())
-        
-            steps=0
-            self.optimizer=optim.Adam(policy_dqn.parameters(),lr=self.alpha)
-            
-            best_reward=float("-inf")
+            steps_since_sync=0
         else:
-             policy_dqn.load_state_dict(torch.load(self.MODEL_FILE, map_location=device, weights_only=True))
-             policy_dqn.eval()
+            if not os.path.exists(self.MODEL_FILE):
+                raise FileNotFoundError(
+                    f"No test model found at {self.MODEL_FILE}. Train the agent first."
+                )
+            checkpoint=self._load_checkpoint(self.MODEL_FILE)
+            policy_dqn.load_state_dict(self._policy_state(checkpoint))
+            policy_dqn.eval()
 
         if is_training and max_steps is None:
             max_steps = self.train_steps
-             
-               
+
+        if is_training:
+            if lifetime_steps >= self.training_goal_steps:
+                print(
+                    f"Training goal already reached: {lifetime_steps:,} / "
+                    f"{self.training_goal_steps:,} lifetime steps. "
+                    "Increase training_goal_steps in parameters.yaml to continue."
+                )
+                env.close()
+                return
+
+            session_start = lifetime_steps
+            session_end = min(
+                session_start + max_steps,
+                self.training_goal_steps,
+            )
+            max_steps = session_end - session_start
+            print(
+                f"Training steps {session_start + 1:,} to {session_end:,} "
+                f"(goal: {self.training_goal_steps:,})"
+            )
+
         total_steps = 0
         try:
             for episode in itertools.count():
@@ -135,7 +184,20 @@ class Agent:
                 
                     if is_training:
                         memory.append((state, action, reward, next_state, done))
-                        steps+=1
+                        lifetime_steps += 1
+                        steps_since_sync += 1
+
+                        # DQN learns continuously after enough experiences exist,
+                        # rather than only once at the end of an episode.
+                        if len(memory) >= self.mini_batch_size:
+                            mini_batch=memory.sample(self.mini_batch_size)
+                            self.optimize(mini_batch,policy_dqn,target_dqn)
+
+                        if steps_since_sync >= self.network_sync_rate:
+                            target_dqn.load_state_dict(policy_dqn.state_dict())
+                            steps_since_sync=0
+
+                        epsilon=max(epsilon*self.epsilon_decay,self.epsilon_min)
 
                     state=next_state
                     episode_steps += 1
@@ -144,41 +206,56 @@ class Agent:
                     
                     episode_rewards+=reward.item()
 
-                mode = "Train" if is_training else "Test"
-                print(
-                    f"{mode} | Episode: {episode + 1} | "
-                    f"Episode steps: {episode_steps} | Total steps: {total_steps} | "
-                    f"Reward: {episode_rewards:.2f}"
-                    + (f" | Epsilon: {epsilon:.4f}" if is_training else "")
-                )
+                if is_training:
+                    print(
+                        f"Episode {episode + 1}: reward={episode_rewards:.2f}, "
+                        f"step={lifetime_steps:,}"
+                    )
+                else:
+                    print(
+                        f"Test episode {episode + 1}: reward={episode_rewards:.2f}, "
+                        f"step={total_steps:,}"
+                    )
             
             
                 if is_training:
-                    epsilon=max(epsilon*self.epsilon_decay,self.epsilon_min)
-                
-                    if episode_rewards>best_reward:
-                        log_msg=f"Best reward={episode_rewards} for episode={episode+1}"
+                    recent_rewards.append(episode_rewards)
+                    mean_reward=sum(recent_rewards) / len(recent_rewards)
+
+                    # A rolling mean is more reliable than saving after one lucky
+                    # episode. The best checkpoint is never overwritten by a worse
+                    # session and is therefore safe to use with test.py.
+                    if (len(recent_rewards) == recent_rewards.maxlen
+                            and mean_reward >= best_reward + self.best_model_min_improvement):
+                        log_msg=(f"Best 100-episode mean reward={mean_reward:.4f} "
+                                 f"at lifetime step={lifetime_steps}")
                         with open(self.LOG_FILE,"a") as f:
                             f.write(log_msg+"\n")
-                    
                         torch.save(policy_dqn.state_dict(),self.MODEL_FILE)
-                        best_reward=episode_rewards
-                if is_training and len(memory) >= self.mini_batch_size:
-                    mini_batch=memory.sample(self.mini_batch_size)
-                
-                    self.optimize(mini_batch,policy_dqn,target_dqn)
-                
-                    if steps >= self.network_sync_rate:
-                        target_dqn.load_state_dict(policy_dqn.state_dict())
-                        steps=0
+                        best_reward=mean_reward
+                        print(
+                            f"New best model saved: mean reward={mean_reward:.2f}, "
+                            f"step={lifetime_steps:,}"
+                        )
 
                 if max_steps is not None and total_steps >= max_steps:
                     break
         finally:
             if is_training:
-                # Save the final session state even if it did not beat a prior reward.
-                torch.save(policy_dqn.state_dict(), self.MODEL_FILE)
-                print(f"Training session saved to {self.MODEL_FILE}")
+                # This checkpoint contains the information needed to continue
+                # training, without replacing the best model used by test.py.
+                torch.save({
+                    "policy_state_dict": policy_dqn.state_dict(),
+                    "optimizer_state_dict": self.optimizer.state_dict(),
+                    "epsilon": epsilon,
+                    "lifetime_steps": lifetime_steps,
+                    "best_mean_reward": best_reward,
+                    "recent_rewards": list(recent_rewards),
+                }, self.LATEST_FILE)
+                print(
+                    f"Training session saved at step {lifetime_steps:,}"
+                )
+                print("Best test model is available at runs/FlappyBird-v0.pt")
             env.close()
     def optimize(self,mini_batch,policy_dqn,target_dqn):
         
@@ -210,6 +287,9 @@ if __name__=="__main__":
     parser.add_argument("--steps", type=int, default=None,
                         help="Override train_steps from parameters.yaml")
     args=parser.parse_args()
+
+    if args.steps is not None and args.steps <= 0:
+        parser.error("--steps must be greater than zero")
         
     dql=Agent(param_set="FlappyBird-v0")
     dql.run(is_training=True, max_steps=args.steps, max_episodes=args.episodes)

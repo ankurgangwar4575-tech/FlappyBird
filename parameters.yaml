@@ -2,11 +2,14 @@ FlappyBird-v0:
   env_id: FlappyBird-v0
   epsilon_init: 1
   epsilon_min: 0.05
-  epsilon_decay: 0.9995
+  epsilon_decay: 0.99995
   replay_memory_size: 100000
   mini_batch_size: 32
-  network_sync_rate: 10
-  alpha: 0.001
+  network_sync_rate: 1000
+  alpha: 0.0001
   gamma: 0.99
   reward_threshold: 1000
   train_steps: 50000
+  training_goal_steps: 1000000
+  # Save a new best test model only after this much rolling-mean improvement.
+  best_model_min_improvement: 0.5

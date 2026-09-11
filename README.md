@@ -43,9 +43,32 @@ python agent.py
 
 Training runs for the `train_steps` value in `parameters.yaml` (50,000 by
 default) and prints the episode number, episode steps, total steps, reward,
-and exploration rate in the terminal. At the end of each session, the model is
-saved to `runs/FlappyBird-v0.pt`. A later training session automatically loads
-that checkpoint and continues from its weights.
+and exploration rate in the terminal.
+
+At the end of each session, `runs/FlappyBird-v0-latest.pt` saves the policy,
+optimizer state, epsilon value, and lifetime step count. A later training
+session automatically loads this file and continues from it. The best model,
+selected using the rolling 100-episode mean reward, is stored separately in
+`runs/FlappyBird-v0.pt`. This prevents a weak final session from overwriting
+the model used for testing.
+
+The YAML file controls both the session size and the lifetime training target:
+
+```yaml
+train_steps: 50000
+training_goal_steps: 1000000
+best_model_min_improvement: 0.5
+```
+
+The first session runs from lifetime step 0 to 50,000. The next runs from
+50,000 to 100,000, and so on. At 1,000,000 lifetime steps, training stops. To
+continue from 1 million toward 2 million, change only
+`training_goal_steps` to `2000000`; the next session then runs from 1,000,000
+to 1,050,000.
+
+Training output is concise and does not use TensorBoard. It shows the device,
+the resumed checkpoint step, the current session range, and each episode's
+reward and lifetime step.
 
 Example training output:
 
@@ -53,8 +76,8 @@ Example training output:
 Train | Episode: 12 | Episode steps: 84 | Total steps: 1035 | Reward: 6.90 | Epsilon: 0.9945
 ```
 
-Press `Ctrl+C` to end a session early. The current model is saved before the
-program exits.
+Press `Ctrl+C` to end a session early. The resumable latest checkpoint is saved
+before the program exits.
 
 For a short run with a fixed number of episodes:
 
@@ -101,11 +124,16 @@ the number of steps per training session.
 ```yaml
 FlappyBird-v0:
   train_steps: 50000
+  training_goal_steps: 1000000
 ```
 
 `train_steps` counts environment actions, not episodes. Every training session
-stops after this many steps and saves the checkpoint. The next `python agent.py`
-run loads that checkpoint and continues training from the saved network weights.
+stops after this many steps and saves a resumable checkpoint. The next
+`python agent.py` run restores its policy, optimizer, exploration rate, and
+lifetime step counter from that checkpoint.
+
+`training_goal_steps` is the maximum total lifetime step count. It prevents
+further sessions after the selected goal has been reached.
 
 ## 📈 Recommended training schedule
 
