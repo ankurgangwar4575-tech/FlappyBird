@@ -37,18 +37,37 @@ pip install -r requirements.txt
 ## 🏋️ Train the agent
 
 ```bash
-python agent.py FlappyBird-v0 --train
+python agent.py
 ```
 
-The best model is saved as `runs/FlappyBird-v0.pt`.
+Training runs for the `train_steps` value in `parameters.yaml` (50,000 by
+default) and prints the episode number, episode steps, total steps, reward,
+and exploration rate in the terminal. At the end of each session, the model is
+saved to `runs/FlappyBird-v0.pt`. A later training session automatically loads
+that checkpoint and continues from its weights.
+
+For a short run with a fixed number of episodes:
+
+```bash
+python agent.py --episodes 100
+```
+
+To override the YAML step limit for one session:
+
+```bash
+python agent.py --steps 100000
+```
 
 ## 🎮 Test the agent
 
-Train the model first, then run:
+Train the model first, then run a fixed number of environment steps:
 
 ```bash
-python agent.py FlappyBird-v0
+python test.py --steps 1000
 ```
+
+This opens the game window and prints each completed episode's steps and
+reward. Use `--no-render` to run without the window.
 
 ## ⚙️ Hyperparameters
 

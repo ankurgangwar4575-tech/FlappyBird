@@ -9,3 +9,4 @@ FlappyBird-v0:
   alpha: 0.001
   gamma: 0.99
   reward_threshold: 1000
+  train_steps: 50000
